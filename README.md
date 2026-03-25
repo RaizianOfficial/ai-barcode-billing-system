@@ -1,4 +1,5 @@
 # 🚀 FIREBASE POS SCANNER (No Hardware Needed)
+# Live Demo: https://ai-billing-app-eight.vercel.app
 
 A fast, mobile-first **Point of Sale (POS)** system with barcode scanning — built using **Next.js + Firebase**.
 
