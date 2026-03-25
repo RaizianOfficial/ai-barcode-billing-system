@@ -146,6 +146,21 @@ Built by **Sunny Rawat (Raizian)**
 
 ---
 
+Tags:
+firebase
+pos-system
+barcode-scanner
+nextjs
+tailwindcss
+firestore
+web-app
+open-source
+javascript
+react
+billing-system
+
+---
+
 ## 📜 License
 
 MIT License — free to use and modify.
