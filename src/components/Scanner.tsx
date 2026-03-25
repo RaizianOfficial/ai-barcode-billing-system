@@ -16,8 +16,10 @@ export default function Scanner({ onScan, onClose }: ScannerProps) {
   const lastScanTimeRef = useRef<number>(0);
   const [status, setStatus] = useState<"idle" | "scanning" | "found" | "notfound">("idle");
 
-  // Keep callback ref fresh without triggering re-render/re-init
+  // Keep callback refs fresh without triggering re-render/re-init
   useEffect(() => { onScanRef.current = onScan; }, [onScan]);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const handleDecode = useCallback(async (decodedText: string) => {
     const now = Date.now();
@@ -35,8 +37,8 @@ export default function Scanner({ onScan, onClose }: ScannerProps) {
     setStatus("found");
 
     // Auto-close after brief success flash
-    setTimeout(onClose, 600);
-  }, [onClose]);
+    setTimeout(() => onCloseRef.current(), 600);
+  }, []); // Empty dependencies! Extremely important!
 
   useEffect(() => {
     const element = document.getElementById("reader");
@@ -45,7 +47,7 @@ export default function Scanner({ onScan, onClose }: ScannerProps) {
     const scanner = new Html5QrcodeScanner(
       "reader",
       {
-        fps: 15, // Increased from 10 → faster detection
+        fps: 10, // Lowered from 15 to 10 for better battery/CPU while maintaining speed
         qrbox: { width: 280, height: 160 },
         aspectRatio: 1.333,
         rememberLastUsedCamera: true,
@@ -61,7 +63,7 @@ export default function Scanner({ onScan, onClose }: ScannerProps) {
       scannerRef.current?.clear().catch(() => {});
       scannerRef.current = null;
     };
-  }, [handleDecode]);
+  }, [handleDecode]); // handleDecode is now perfectly stable
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">

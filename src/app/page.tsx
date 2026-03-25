@@ -51,6 +51,30 @@ export default function Home() {
   // In-memory cache: barcode -> product (avoids repeated Firestore lookups)
   const productCacheRef = useRef<Map<string, Product | null>>(new Map());
 
+  // 1. Initial Data Fetch: Pre-cache ALL products for instant scanning
+  useEffect(() => {
+    let isMounted = true;
+    const preCacheProducts = async () => {
+      try {
+        const q = query(collection(db, "products"));
+        const snapshot = await getDocs(q);
+        if (!isMounted) return;
+        
+        snapshot.forEach((doc) => {
+          const product = { id: doc.id, ...doc.data() } as Product;
+          if (product.barcode) {
+            productCacheRef.current.set(product.barcode, product);
+          }
+        });
+        console.log(`Pre-cached ${productCacheRef.current.size} products for instant scanning.`);
+      } catch (err) {
+        console.error("Failed to pre-cache products", err);
+      }
+    };
+    preCacheProducts();
+    return () => { isMounted = false; };
+  }, []);
+
   // Search logic
   useEffect(() => {
     const searchProducts = async () => {
