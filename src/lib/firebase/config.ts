@@ -1,6 +1,6 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
+import { getAuth, Auth } from "firebase/auth";
+import { getFirestore, Firestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -11,9 +11,21 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Initialize Firebase
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+// Guard: only initialize Firebase when the API key is present.
+// During Vercel's static prerender phase env vars may be absent if not configured.
+let app: FirebaseApp;
+let auth: Auth;
+let db: Firestore;
+
+if (process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
+  app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  db = getFirestore(app);
+} else {
+  // Stub values — these paths are never reached at runtime (only during prerender of static shell pages)
+  app = {} as FirebaseApp;
+  auth = {} as Auth;
+  db = {} as Firestore;
+}
 
 export { app, auth, db };
