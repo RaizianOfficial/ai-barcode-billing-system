@@ -15,7 +15,10 @@ import {
   Receipt,
   ShoppingCart,
   ChevronRight,
-  PackageSearch
+  PackageSearch,
+  Loader2,
+  Printer,
+  Download
 } from "lucide-react";
 import { db } from "@/lib/firebase/config";
 import { 
@@ -47,6 +50,8 @@ export default function Home() {
   const [processing, setProcessing] = useState(false);
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [tempPrice, setTempPrice] = useState<string>("");
+  const [receiptPdfUrl, setReceiptPdfUrl] = useState<string | null>(null);
+  const [currentReceiptDoc, setCurrentReceiptDoc] = useState<jsPDF | null>(null);
 
   // In-memory cache: barcode -> product (avoids repeated Firestore lookups)
   const productCacheRef = useRef<Map<string, Product | null>>(new Map());
@@ -152,23 +157,27 @@ export default function Home() {
   const handleCheckout = async () => {
     if (items.length === 0) return;
     setProcessing(true);
+    let saleId = "";
+    const currentTotal = getTotal();
+    const snapItems = [...items]; // snapshot representing the cart
+
     try {
       const batch = writeBatch(db);
       
       // 1. Create Sale
       const saleRef = doc(collection(db, "sales"));
-      const totalAmount = getTotal();
+      saleId = saleRef.id;
       
       batch.set(saleRef, {
-        totalAmount,
+        totalAmount: currentTotal,
         createdAt: serverTimestamp(),
       });
 
       // 2. Create Sale Items
-      items.forEach((item) => {
+      snapItems.forEach((item) => {
         const saleItemRef = doc(collection(db, "saleItems"));
         batch.set(saleItemRef, {
-          saleId: saleRef.id,
+          saleId: saleId,
           productId: item.id,
           name: item.name,
           price: item.price,
@@ -177,63 +186,92 @@ export default function Home() {
         });
       });
 
+      // Execute transaction completely before generating receipt
       await batch.commit();
 
-      // 3. Generate Receipt
-      generateReceipt(saleRef.id, items, totalAmount);
+      // 3. Generate Thermal Receipt and load into UI Modal instead of auto-downloading immediately 
+      const pdfDoc = generateReceipt(saleId, snapItems, currentTotal);
+      setCurrentReceiptDoc(pdfDoc);
+      // Wait to create the blob URL for the iframe preview
+      const pdfUrl = pdfDoc.output("bloburl") as unknown as string; // ts typing cast
+      setReceiptPdfUrl(pdfUrl);
 
-      // 4. Clear Cart
+      // 4. Clear Cart on success ONLY
       clearCart();
-      alert("Sale processed successfully!");
     } catch (err) {
       console.error(err);
-      alert("Error processing sale!");
+      alert("Error processing sale! Please check your connection.");
     } finally {
       setProcessing(false);
     }
   };
 
-  const generateReceipt = (saleId: string, items: any[], total: number) => {
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
+  const generateReceipt = (saleId: string, printedItems: any[], total: number) => {
+    // 80mm generic thermal printer format
+    const doc = new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [80, 200] // Initial arbitrary height, we usually print exact height but PDF preview is responsive
+    });
+    
+    const pageWidth = 80;
     
     // Header
-    doc.setFontSize(22);
-    doc.text("POINT OF SALE RECEIPT", pageWidth / 2, 20, { align: "center" });
+    doc.setFont("courier", "bold");
+    doc.setFontSize(14);
+    doc.text("RAIZIAN STORE", pageWidth / 2, 12, { align: "center" });
     
     doc.setFontSize(10);
-    doc.text(`Sale ID: ${saleId}`, 20, 30);
-    doc.text(`Date: ${new Date().toLocaleString()}`, 20, 35);
+    doc.setFont("courier", "normal");
+    doc.text("---------------------------------------", pageWidth / 2, 18, { align: "center" });
+
+    const now = new Date();
+    // Use narrower font spacing specifically for Courier
+    doc.text(`Date: ${now.toLocaleDateString()}`, 4, 24);
+    doc.text(`Time: ${now.toLocaleTimeString()}`, 4, 29);
+    doc.text(`ID:   ${saleId.slice(-6).toUpperCase()}`, 4, 34);
+
+    doc.text("---------------------------------------", pageWidth / 2, 39, { align: "center" });
     
     // Table Header
-    doc.line(20, 45, pageWidth - 20, 45);
-    doc.setFontSize(12);
-    doc.text("Item", 20, 52);
-    doc.text("Qty", pageWidth - 70, 52, { align: "center" });
-    doc.text("Price", pageWidth - 45, 52, { align: "center" });
-    doc.text("Total", pageWidth - 20, 52, { align: "right" });
-    doc.line(20, 55, pageWidth - 20, 55);
+    doc.text("Item", 4, 44);
+    doc.text("Qty", 48, 44, { align: "center" });
+    doc.text("Total", 76, 44, { align: "right" });
+    
+    doc.text("---------------------------------------", pageWidth / 2, 49, { align: "center" });
     
     // Items
-    let y = 62;
-    items.forEach((item) => {
-      doc.setFontSize(10);
-      doc.text(item.name, 20, y);
-      doc.text(item.quantity.toString(), pageWidth - 70, y, { align: "center" });
-      doc.text(`$${item.price.toFixed(2)}`, pageWidth - 45, y, { align: "center" });
-      doc.text(`$${(item.price * item.quantity).toFixed(2)}`, pageWidth - 20, y, { align: "right" });
-      y += 8;
+    let y = 54;
+    printedItems.forEach((item) => {
+      let nameStr = item.name.substring(0, 16); // limit length for thermal realism
+      doc.text(nameStr, 4, y);
+      
+      doc.text(item.quantity.toString(), 48, y, { align: "center" });
+      const itemTotal = (item.price * item.quantity).toFixed(2);
+      doc.text(`$${itemTotal}`, 76, y, { align: "right" });
+      y += 6;
     });
 
     // Footer
-    doc.line(20, y, pageWidth - 20, y);
-    doc.setFontSize(14);
-    doc.text(`TOTAL: $${total.toFixed(2)}`, pageWidth - 20, y + 10, { align: "right" });
+    doc.text("---------------------------------------", pageWidth / 2, y, { align: "center" });
+    y += 8;
+
+    doc.setFontSize(12);
+    doc.setFont("courier", "bold");
+    doc.text("TOTAL:", 4, y);
+    doc.text(`$${total.toFixed(2)}`, 76, y, { align: "right" });
     
+    y += 8;
     doc.setFontSize(10);
-    doc.text("Thank you for your purchase!", pageWidth / 2, y + 25, { align: "center" });
+    doc.setFont("courier", "normal");
+    doc.text("=======================================", pageWidth / 2, y, { align: "center" });
     
-    doc.save(`receipt-${saleId}.pdf`);
+    y += 8;
+    doc.text("Thank you for shopping!", pageWidth / 2, y, { align: "center" });
+    y += 6;
+    doc.text("Please visit again.", pageWidth / 2, y, { align: "center" });
+    
+    return doc;
   };
 
   if (authLoading) return <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -405,13 +443,20 @@ export default function Home() {
                       <span className="text-slate-500 font-semibold uppercase tracking-wider text-xs">Total Amount</span>
                       <span className="text-3xl font-black text-slate-900">${getTotal().toFixed(2)}</span>
                    </div>
-                   <button
-                    onClick={handleCheckout}
-                    disabled={items.length === 0 || processing}
-                    className="w-full flex items-center justify-center gap-2 rounded-xl bg-slate-900 py-4 font-bold text-white transition-all hover:bg-slate-800 active:scale-95 disabled:bg-slate-300 shadow-xl shadow-slate-200"
-                   >
-                    {processing ? "Processing..." : <><CreditCard size={20} /> CHECKOUT & PRINT</>}
-                   </button>
+                    <button
+                     onClick={handleCheckout}
+                     disabled={items.length === 0 || processing}
+                     className="w-full flex items-center justify-center gap-2 rounded-xl bg-slate-900 py-4 font-bold text-white transition-all hover:bg-slate-800 active:scale-95 disabled:bg-slate-300 shadow-xl shadow-slate-200"
+                    >
+                     {processing ? (
+                       <>
+                         <Loader2 className="animate-spin" size={20} />
+                         GENERATING BILL...
+                       </>
+                     ) : (
+                       <><CreditCard size={20} /> CHECKOUT & PRINT</>
+                     )}
+                    </button>
                 </div>
              </div>
           </div>
@@ -437,6 +482,53 @@ export default function Home() {
         />
       )}
       
+      {/* Receipt Preview Modal */}
+      {receiptPdfUrl && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-2xl bg-slate-100 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh]">
+            <div className="flex items-center justify-between p-4 bg-white border-b border-slate-200">
+               <div className="flex items-center gap-2">
+                 <Receipt className="text-slate-600" size={20} />
+                 <h2 className="font-bold text-slate-800">Receipt Generated</h2>
+               </div>
+               <button 
+                 onClick={() => {
+                    setReceiptPdfUrl(null);
+                    setCurrentReceiptDoc(null);
+                 }}
+                 className="text-slate-500 hover:text-slate-800 font-bold px-3 py-1 rounded hover:bg-slate-100"
+               >
+                 Close
+               </button>
+            </div>
+            
+            {/* The PDF Preview */}
+            <div className="flex-1 p-4 bg-slate-200 overflow-hidden">
+               <iframe 
+                 src={receiptPdfUrl} 
+                 className="w-full h-[50vh] rounded-lg shadow-sm bg-white" 
+                 title="Receipt Preview"
+               />
+            </div>
+
+            <div className="p-4 bg-white border-t border-slate-200 flex justify-end gap-3">
+               <button 
+                 onClick={() => currentReceiptDoc?.save("receipt.pdf")}
+                 className="flex items-center gap-2 px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-xl text-sm transition-all"
+               >
+                 <Download size={18} /> Download PDF
+               </button>
+               <button 
+                 onClick={() => currentReceiptDoc?.autoPrint({variant: 'javascript'})}
+                 className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-sm transition-all shadow-lg shadow-blue-200"
+               >
+                 <Printer size={18} /> Print Final Bill
+               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style jsx global>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 6px;
