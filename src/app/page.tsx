@@ -3,7 +3,7 @@
 import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { Navigation } from "@/components/Navigation";
 import { useCartStore } from "@/store/useCartStore";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { 
   Plus, 
@@ -46,6 +46,9 @@ export default function Home() {
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [processing, setProcessing] = useState(false);
 
+  // In-memory cache: barcode -> product (avoids repeated Firestore lookups)
+  const productCacheRef = useRef<Map<string, Product | null>>(new Map());
+
   // Search logic
   useEffect(() => {
     const searchProducts = async () => {
@@ -72,24 +75,38 @@ export default function Home() {
     return () => clearTimeout(timeoutId);
   }, [searchQuery]);
 
-  const handleScan = async (barcode: string) => {
-    // 1. Query Firestore for barcode
+  const handleScan = useCallback(async (barcode: string) => {
+    const cache = productCacheRef.current;
+
+    // 1. Check cache first — instant if already looked up
+    if (cache.has(barcode)) {
+      const cached = cache.get(barcode);
+      if (cached) {
+        addItem(cached);
+      } else {
+        setScannedBarcode(barcode);
+        setShowScanner(false);
+        setShowAddModal(true);
+      }
+      return;
+    }
+
+    // 2. Not cached — query Firestore
     const q = query(collection(db, "products"), where("barcode", "==", barcode));
     const querySnapshot = await getDocs(q);
 
     if (!querySnapshot.empty) {
-      // 2. Found -> Add to Cart
-      const doc = querySnapshot.docs[0];
-      const product = { id: doc.id, ...doc.data() } as Product;
+      const docSnap = querySnapshot.docs[0];
+      const product = { id: docSnap.id, ...docSnap.data() } as Product;
+      cache.set(barcode, product); // cache it
       addItem(product);
-      setShowScanner(false);
     } else {
-      // 3. Not Found -> Show Add Modal
+      cache.set(barcode, null); // cache miss too
       setScannedBarcode(barcode);
       setShowScanner(false);
       setShowAddModal(true);
     }
-  };
+  }, [addItem]);
 
   const handleCheckout = async () => {
     if (items.length === 0) return;

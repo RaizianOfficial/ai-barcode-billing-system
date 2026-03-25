@@ -1,82 +1,72 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Html5QrcodeScanner, Html5QrcodeScanType } from "html5-qrcode";
-import { Camera, X, CheckCircle } from "lucide-react";
+import { Camera, X, CheckCircle, Loader2 } from "lucide-react";
 
 interface ScannerProps {
-  onScan: (barcode: string) => void;
+  onScan: (barcode: string) => Promise<void>;
   onClose: () => void;
 }
 
 export default function Scanner({ onScan, onClose }: ScannerProps) {
   const scannerRef = useRef<Html5QrcodeScanner | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const lastScanRef = useRef<number>(0);
+  const onScanRef = useRef(onScan);
   const lastBarcodeRef = useRef<string | null>(null);
+  const lastScanTimeRef = useRef<number>(0);
+  const [status, setStatus] = useState<"idle" | "scanning" | "found" | "notfound">("idle");
+
+  // Keep callback ref fresh without triggering re-render/re-init
+  useEffect(() => { onScanRef.current = onScan; }, [onScan]);
+
+  const handleDecode = useCallback(async (decodedText: string) => {
+    const now = Date.now();
+    // Dedupe: same barcode within 2s OR any scan within 300ms
+    if (
+      (decodedText === lastBarcodeRef.current && now - lastScanTimeRef.current < 2000) ||
+      now - lastScanTimeRef.current < 300
+    ) return;
+
+    lastBarcodeRef.current = decodedText;
+    lastScanTimeRef.current = now;
+
+    setStatus("scanning");
+    await onScanRef.current(decodedText);
+    setStatus("found");
+
+    // Auto-close after brief success flash
+    setTimeout(onClose, 600);
+  }, [onClose]);
 
   useEffect(() => {
-    // Correct lifecycle management: check if scanner element exists before initializing
-    const scannerId = "reader";
-    const element = document.getElementById(scannerId);
-    if (!element) return;
+    const element = document.getElementById("reader");
+    if (!element || scannerRef.current) return;
 
-    if (!scannerRef.current) {
-      const scanner = new Html5QrcodeScanner(
-        scannerId,
-        {
-          fps: 10,
-          qrbox: { width: 250, height: 150 },
-          aspectRatio: 1.0,
-          rememberLastUsedCamera: true,
-          supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA],
-        },
-        /* verbose= */ false
-      );
+    const scanner = new Html5QrcodeScanner(
+      "reader",
+      {
+        fps: 15, // Increased from 10 → faster detection
+        qrbox: { width: 280, height: 160 },
+        aspectRatio: 1.333,
+        rememberLastUsedCamera: true,
+        supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA],
+      },
+      false
+    );
 
-      scanner.render(
-        (decodedText) => {
-          const now = Date.now();
-          // Throttle: don't scan same barcode too fast (within 2 seconds)
-          if (
-            decodedText === lastBarcodeRef.current &&
-            now - lastScanRef.current < 2000
-          ) {
-            return;
-          }
-
-          // Throttle: don't scan ANY barcode too fast (within 500ms)
-          if (now - lastScanRef.current < 500) {
-            return;
-          }
-
-          lastScanRef.current = now;
-          lastBarcodeRef.current = decodedText;
-          onScan(decodedText);
-        },
-        (error) => {
-          // Normal error during scanning - ignore to keep running
-          // Only show serious errors
-          // console.warn(error);
-        }
-      );
-
-      scannerRef.current = scanner;
-    }
+    scanner.render(handleDecode, () => {});
+    scannerRef.current = scanner;
 
     return () => {
-      if (scannerRef.current) {
-        scannerRef.current
-          .clear()
-          .catch((err) => console.error("Failed to clear scanner", err));
-        scannerRef.current = null;
-      }
+      scannerRef.current?.clear().catch(() => {});
+      scannerRef.current = null;
     };
-  }, [onScan]);
+  }, [handleDecode]);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
       <div className="relative w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+        {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 p-4">
           <div className="flex items-center gap-2">
             <Camera className="text-blue-600" size={20} />
@@ -84,17 +74,36 @@ export default function Scanner({ onScan, onClose }: ScannerProps) {
           </div>
           <button
             onClick={onClose}
-            className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 p-2 transition-all"
+            className="rounded-full p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all"
           >
             <X size={20} />
           </button>
         </div>
 
-        <div className="p-4">
-          <div id="reader" className="w-full overflow-hidden rounded-lg bg-slate-100 aspect-video"></div>
-          {error && <p className="mt-2 text-center text-sm text-red-600">{error}</p>}
-          <p className="mt-4 text-center text-xs text-slate-500">
-            Align barcode within the frame to scan automatically
+        {/* Scanner view */}
+        <div className="p-4 relative">
+          <div id="reader" className="w-full overflow-hidden rounded-lg bg-slate-100" />
+
+          {/* Instant feedback overlay */}
+          {status === "scanning" && (
+            <div className="absolute inset-4 flex items-center justify-center rounded-lg bg-blue-500/20 backdrop-blur-[2px]">
+              <div className="flex flex-col items-center gap-2 text-blue-700">
+                <Loader2 size={36} className="animate-spin" />
+                <span className="font-semibold text-sm">Looking up product…</span>
+              </div>
+            </div>
+          )}
+          {status === "found" && (
+            <div className="absolute inset-4 flex items-center justify-center rounded-lg bg-green-500/20 backdrop-blur-[2px]">
+              <div className="flex flex-col items-center gap-2 text-green-700">
+                <CheckCircle size={40} />
+                <span className="font-bold text-sm">Added to cart!</span>
+              </div>
+            </div>
+          )}
+
+          <p className="mt-3 text-center text-xs text-slate-400">
+            Align barcode within the frame — scanning automatically
           </p>
         </div>
       </div>
